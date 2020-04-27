@@ -1,0 +1,489 @@
+---
+title: "MattHill"
+author: "Samuel Keat"
+date: "27 October 2019"
+output: html_document
+---
+
+## If "rlang" must be loaded manually prior to installation
+
+```{r}
+library("rlang", lib.loc="~/R/win-library/3.6")
+```
+
+
+## Set the working directory
+
+```{r}
+##setwd("C:/Users/Sam/Desktop/Voluntary Projects/Matt Hill/R/bin")
+```
+
+## Step 0.1 - Installing the packages and relevant dependencies using BioConductor
+
+```{r}
+library(readr)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::version()
+
+## Required
+BiocManager::install(c("AUCell", "RcisTarget"))
+BiocManager::install(c("GENIE3")) # Optional. Can be replaced by GRNBoost
+
+## Optional (but highly recommended):
+# To score the network on cells (i.e. run AUCell):
+BiocManager::install(c("zoo", "mixtools", "rbokeh"))
+# For various visualizations and perform t-SNEs:
+BiocManager::install(c("DT", "NMF", "pheatmap", "R2HTML", "Rtsne"))
+# To support paralell execution (not available in Windows):
+BiocManager::install(c("doMC", "doRNG"))
+# To export/visualize in http://scope.aertslab.org
+if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+devtools::install_github("aertslab/SCopeLoomR", build_vignettes = TRUE, force = TRUE)
+```
+
+## Step 0.2 - Check versions of installed packages
+
+Ensure versions of packages are: AUCell >=1.4.1 (minimum 1.2.4), RcisTarget>=1.2.0 (minimum 1.0.2) and GENIE3>=1.4.0 (minimum 1.2.1).
+
+If not, re-run the previous step.
+
+```{r}
+packageVersion("AUCell")
+packageVersion("RcisTarget")
+packageVersion("GENIE3")
+```
+
+## Step 0.3 - Finally, install SCENIC
+
+Select option 1 to install and update ALL packages and dependencies.
+
+```{r}
+if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+devtools::install_github("aertslab/SCENIC",force=TRUE)
+library(SCENIC)
+packageVersion("SCENIC")
+```
+
+## Step 1 - Convert the Human Transcription Factors to Mouse
+
+Conversion using 'gorth' from the package 'gProfileR'. First, install 'gProfileR' and load library.
+
+```{r}
+install.packages("gProfileR")
+library(gProfileR)
+
+##install.packages("gprofiler2")
+##library(gprofiler2)
+```
+
+Then perform the conversion using the 'gorth' function.
+
+```{r}
+humTF <- read.table("C:/Users/Sam/Desktop/Voluntary Projects/Matt Hill/R/resources/TFs_Ensembl_v_1.01.txt", quote="\"", comment.char="")
+
+mouseTF=gorth(query=as.array(humTF$V1),source_organism="hsapiens",target_organism="mmusculus")
+```
+
+Save this list as a .txt file
+
+```{r}
+write.table(mouseTF$target.ensg,file="C:/Users/Sam/Desktop/Voluntary Projects/Matt Hill/R/resources/MM_TFs_Ensembl.txt",quote=FALSE,eol="\n",row.names=FALSE,col.names=F)
+```
+
+Save whole dataframe as a .csv
+
+```{r}
+write.csv(mouseTF,file="C:/Users/Sam/Desktop/Voluntary Projects/Matt Hill/R/resources/MM_TFs_full.csv",quote=TRUE,eol="\n",row.names=FALSE)
+```
+
+## Step 2 - Uploading and cleaning the data using SCENIC
+
+Upload and format the GEO dataset.
+
+```{r}
+if (!requireNamespace("GEOquery", quietly = TRUE)) BiocManager::install("GEOquery")
+library(GEOquery)
+geoFile <- getGEOSuppFiles("GSE123025", makeDirectory=FALSE)
+gzFile <- grep("data", basename(rownames(geoFile)), value=TRUE)
+txtFile <- gsub(".gz", "", gzFile)
+gunzip(gzFile, destname=txtFile, remove=TRUE, overwrite=TRUE)
+
+library(data.table)
+geoData <- fread(txtFile, sep=",")
+geneNames <- unname(unlist(geoData[,1, with=FALSE]))
+exprMatrix <- as.matrix(geoData[,-1, with=FALSE])
+rm(geoData)
+dim(exprMatrix)
+rownames(exprMatrix) <- geneNames
+exprMatrix <- exprMatrix[unique(rownames(exprMatrix)),]
+exprMatrix[1:5,1:4]
+
+file.remove(txtFile)
+```
+
+Load the cell types from the AUCell package.
+
+```{r}
+cellLabels <- paste(file.path(system.file('examples', package='AUCell')), "mouseBrain_cellLabels.tsv", sep="/")
+cellLabels <- read.table(cellLabels, row.names=1, header=TRUE, sep="\t")
+cellInfo <- as.data.frame(cellLabels)
+colnames(cellInfo) <- "Class"
+```
+
+Make sure all the required packages are loaded.
+
+```{r}
+library(GENIE3)
+library(AUCell)
+library(RcisTarget)
+library(SCENIC)
+```
+
+Save this information into a .loom file for further analysis.
+
+```{r}
+library(SCopeLoomR)
+dir.create("data")
+loom <- build_loom("data/GSE123025.loom", dgem=exprMatrix)
+library(SCENIC)
+close_loom(loom)
+```
+
+## Step 3 - Running the SCENIC workflow.
+
+Load in the data.
+
+```{r}
+loomPath <- system.file(package="SCENIC", "examples/mouseBrain_toy.loom")
+library(SCopeLoomR)
+loom <- open_loom(loomPath, mode="r")
+exprMat <- get_dgem(loom)
+cellInfo <- get_cellAnnotation(loom)
+close_loom(loom)
+
+dim(exprMat)
+```
+
+Create a directory to store the workings.
+
+```{r}
+knitr::opts_knit$set(root.dir = 'example_results/SCENIC_MouseBrain')
+```
+
+Head the known cell data.
+
+```{r}
+head(cellInfo)
+```
+
+Count the number of cell types and store in a seperate table.
+
+```{r}
+cellInfo <- data.frame(cellInfo)
+cellTypeColumn <- "Class"
+colnames(cellInfo)[which(colnames(cellInfo)==cellTypeColumn)] <- "CellType"
+cbind(table(cellInfo$CellType))
+```
+
+Create a directory to store this information.
+
+```{r}
+dir.create("int")
+```
+
+Save the information about the cells into the newly created directory in R Data Single (RDS) format.
+
+```{r}
+saveRDS(cellInfo, file="int/cellInfo.Rds")
+```
+
+Assign each of the variables as colours for later use in a heatmap.
+
+```{r}
+colVars <- list(CellType=c("microglia"="forestgreen", 
+                           "endothelial-mural"="darkorange", 
+                           "astrocytes_ependymal"="magenta4", 
+                           "oligodendrocytes"="hotpink", 
+                           "interneurons"="red3", 
+                           "pyramidal CA1"="skyblue", 
+                           "pyramidal SS"="darkblue"))
+colVars$CellType <- colVars$CellType[intersect(names(colVars$CellType), cellInfo$CellType)]
+saveRDS(colVars, file="int/colVars.Rds")
+plot.new(); legend(0,1, fill=colVars$CellType, legend=names(colVars$CellType))
+```
+
+First, check if the .feather files are available. If not, download them (they may need to be downloaded manually if the settings initilisation causes the R session to terminate)
+
+```{r}
+library(SCENIC)
+
+dbFiles <- c("https://resources.aertslab.org/cistarget/databases/mus_musculus/mm9/refseq_r45/mc9nr/gene_based/mm9-500bp-upstream-7species.mc9nr.feather","https://resources.aertslab.org/cistarget/databases/mus_musculus/mm9/refseq_r45/mc9nr/gene_based/mm9-tss-centered-10kb-7species.mc9nr.feather")
+
+## File names after download
+downloadedDBFiles <- c("cisTarget_databases/mm9-500bp-upstream-7species.mc9nr.feather","cisTarget_databases/mm9-tss-centered-10kb-7species.mc9nr.feather")
+
+
+## The databases are downloaded only in the case when the files do not exist.
+if( !(file.exists(downloadedDBFiles[1]) & file.exists(downloadedDBFiles[2])) ){
+  
+  ## Create and move to the new folder
+  dir.create("cisTarget_databases");
+  setwd("cisTarget_databases") 
+  for(featherURL in dbFiles)
+  {
+    download.file(featherURL, destfile=basename(featherURL)) # saved in current dir
+    descrURL <- gsub(".feather$", ".descr", featherURL)
+    if(file.exists(descrURL)) download.file(descrURL, destfile=basename(descrURL))
+  }
+  setwd("..")
+  
+}
+```
+
+(gene filtering by biologically relevant cells of the .feather)
+
+Initialise settings for SCENIC before operation, selecting mouse (mgi) as organism.
+
+```{r}
+org="mgi"
+dbDir="cisTarget_databases"
+myDatasetTitle="SCENIC Mouse brain - GSE123025"
+data(defaultDbNames)
+dbs <- defaultDbNames[[org]]
+scenicOptions <- initializeScenic(org=org, dbDir=dbDir, dbs=dbs, datasetTitle=myDatasetTitle, nCores=10) 
+```
+
+## Step 5 - Running the GENIE3 Network Inference
+
+Build up a co-expression network, filtering out certain genes using the SCENIC options defined previously.
+
+```{r}
+# Filter out genes expressed at very low levels (possible noise) or in too few cells
+# Only genes in the RcisTarget database are kept too
+genesKept <- geneFiltering(exprMatrix, scenicOptions, minCountsPerGene=3*.01*ncol(exprMatrix), minSamples=ncol(exprMatrix)*.01)
+
+# Check how many of the transcription factors have been removed
+interestingGenes <- as.vector(mouseTF$target.name)
+
+# Any ones that are missing are stored as an .RDS file
+interestingGenes[which(!interestingGenes %in% toupper(genesKept))]
+```
+
+Now filter out the co-expression matrix to only contain these genes.
+
+```{r}
+exprMat_filtered <- exprMatrix[genesKept, ]
+# Then find out the dimensions of this new expression matrix
+dim(exprMat_filtered)
+```
+
+Now remove the old expression matrix.
+
+```{r}
+rm(exprMatrix)
+```
+
+In order to determine positive or negative associations (activation or repression), the targets are split into positively and negatively correlated targets.
+
+```{r}
+runCorrelation(exprMat_filtered, scenicOptions)
+```
+
+Then, run the GENIE3 network inference, first normalising the data (if it hasn't already been) and then running under SCENIC settings
+
+```{r}
+exprMat_filtered_log <- log2(exprMat_filtered+1) 
+#runGenie3(exprMat_filtered_log, scenicOptions)
+```
+
+Build-up and provide scores for the Gene Regulatory Network (GRN)
+
+```{r}
+exprMat_log <- log2(exprMat+1)
+scenicOptions@settings$dbs <- scenicOptions@settings$dbs["10kb"] # Toy run settings
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+runSCENIC_2_createRegulons(scenicOptions,coexMethod=c("top5perTarget")) # Toy run settings
+runSCENIC_3_scoreCells(scenicOptions, exprMat_log)
+```
+
+Export this GRN and scores to scope.
+
+```{r}
+export2scope(scenicOptions, exprMatrix)
+```
+
+## Binarise the regulon activity (step 4)
+
+Set the input values, plotting all available figures
+
+```{r}
+skipBoxplot=FALSE
+skipHeatmaps=FALSE
+skipTsne=FALSE
+```
+
+Assign the cells and save as a binary matrix
+
+```{r}
+nCores <- getSettings(scenicOptions, "nCores")
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+thresholds <- loadInt(scenicOptions, "aucell_thresholds")
+thresholds <- getThresholdSelected(thresholds)
+
+# Assign cells
+regulonsCells <- setNames(lapply(names(thresholds), 
+                                 function(x) {
+                                   trh <- thresholds[x]
+                                   names(which(getAUC(regulonAUC)[x,]>trh))
+                                 }),names(thresholds))
+### Convert to matrix (regulons with zero assigned cells are lost)
+regulonActivity <- reshape2::melt(regulonsCells)
+binaryRegulonActivity <- t(table(regulonActivity[,1], regulonActivity[,2]))
+class(binaryRegulonActivity) <- "matrix"
+saveRDS(binaryRegulonActivity, file=getIntName(scenicOptions, "aucell_binary_full"))
+```
+
+Plot heatmap
+
+```{r}
+if(!skipHeatmaps)
+{
+  regulonSelection <- loadInt(scenicOptions, "aucell_regulonSelection", ifNotExists="null", verbose=FALSE)
+  if(is.null(regulonSelection)) 
+    regulonSelection <- regulonSelections(binaryRegulonActivity, binaryRegulonActivity_nonDupl, minCells)
+
+  cellInfo <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "cellInfo"), ifNotExists="null")
+  cellInfo <- data.frame(cellInfo)
+  colVars <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "colVars"), ifNotExists="null")
+
+
+  ### Plot heatmap:
+  for(selRegs in names(regulonSelection$labels))
+  {
+    if(length(regulonSelection[[selRegs]])>1)
+    {
+      regulonSelection[[selRegs]] <- regulonSelection[[selRegs]][which(regulonSelection[[selRegs]] %in% rownames(binaryRegulonActivity))]
+      binaryMat <- binaryRegulonActivity[regulonSelection[[selRegs]],,drop=FALSE]
+
+      fileName <- paste0(getOutName(scenicOptions, "s4_binaryActivityHeatmap"),selRegs)
+
+      fileName <- .openDevHeatmap(fileName=fileName, devType=getSettings(scenicOptions, "devType"))
+        NMF::aheatmap(binaryMat, scale="none", revC=TRUE, main=selRegs,   
+                      annCol=cellInfo[colnames(binaryMat),, drop=FALSE],
+                      annColor=colVars,
+                      color = c("white", "black"),
+                      filename=fileName)
+      if(getSettings(scenicOptions, "devType")!="pdf") dev.off()
+    }
+  }
+}  
+t-SNE on binary activity (optional)
+if(!skipTsne)
+{
+  tSNE_fileName <- tsneAUC(scenicOptions, aucType="Binary", filePrefix=getIntName(scenicOptions, "tsne_prefix"), onlyHighConf=FALSE) # default: nPcs, perpl, seed
+  tSNE <- readRDS(tSNE_fileName)
+
+  # AUCell (activity) as html: 
+  fileName <- getOutName(scenicOptions, "s4_binarytSNE_colAct")
+  plotTsne_regulonActivityHTML(scenicOptions, exprMat, fileName, tSNE) #open the resulting html locally
+
+  # Plot cell properties:
+  sub <- ""; if("type" %in% names(tSNE)) sub <- paste0("t-SNE on ", tSNE$type)
+  cellInfo <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "cellInfo"), ifNotExists="null")
+  colVars <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "colVars"), ifNotExists="null")
+  pdf(paste0(getOutName(scenicOptions, "s4_binarytSNE_colProps"),".pdf"))
+  plotTsne_cellProps(tSNE$Y, cellInfo=cellInfo, colVars=colVars, cex=1, sub=sub)
+  dev.off()
+}
+```
+
+Plot tSNE
+
+```{r}
+if(!skipTsne)
+{
+  tSNE_fileName <- tsneAUC(scenicOptions, aucType="Binary", filePrefix=getIntName(scenicOptions, "tsne_prefix"), onlyHighConf=FALSE) # default: nPcs, perpl, seed
+  tSNE <- readRDS(tSNE_fileName)
+
+  # AUCell (activity) as html: 
+  fileName <- getOutName(scenicOptions, "s4_binarytSNE_colAct")
+  plotTsne_regulonActivityHTML(scenicOptions, exprMat, fileName, tSNE) #open the resulting html locally
+
+  # Plot cell properties:
+  sub <- ""; if("type" %in% names(tSNE)) sub <- paste0("t-SNE on ", tSNE$type)
+  cellInfo <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "cellInfo"), ifNotExists="null")
+  colVars <- loadFile(scenicOptions, getDatasetInfo(scenicOptions, "colVars"), ifNotExists="null")
+  pdf(paste0(getOutName(scenicOptions, "s4_binarytSNE_colProps"),".pdf"))
+  plotTsne_cellProps(tSNE$Y, cellInfo=cellInfo, colVars=colVars, cex=1, sub=sub)
+  dev.off()
+}
+
+```
+
+Quick
+
+```{r}
+runSCENIC_4_aucell_binarize(scenicOptions,skipBoxplot=FALSE,skipHeatmaps=FALSE,skipTsne=FALSE,exprMat=NULL)
+```
+
+## Extra Steps
+
+Installing and loading RDAVIDWebService.
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("RDAVIDWebService")
+```
+
+Load RDAVIDWebService
+
+Optional: If Java isn't working (rJava won't load), install Java and set the system environment to the Java directory (e.g. Sys.setenv(JAVA_HOME="C:/Program Files/Java/jre1.8.0_241"))
+
+```{r}
+Sys.setenv(JAVA_HOME="C:/Program Files/Java/jre1.8.0_241")
+library(rJava)
+library(RDAVIDWebService)
+```
+
+Running DAVID
+
+```{r}
+RDAVIDWebService::genes(interestingGenes)
+```
+
+Load tidyverse and dplyr.
+
+```{r}
+library(tidyverse)
+library(dplyr)
+```
+
+Running GProfileR gene enrichment finding tool, first to find the biological process (BP).
+
+```{r}
+BPresults=gprofiler(interestingGenes, organism="mmusculus", min_set_size=5, min_isect_size=5, correction_method="fdr", src_filter="GO:BP")
+BPlist=BPresults$term.name
+BPgene=BPresults$intersection
+BPannotation=bind_cols(data.frame(BPgene),data.frame(BPlist))
+```
+
+Then to find the molecular function (MF).
+
+```{r}
+MFresults=gprofiler(interestingGenes, organism="mmusculus", min_set_size=5, min_isect_size=5, correction_method="fdr", src_filter="GO:MF")
+MFlist=MFresults$term.name
+MFgene=MFresults$intersection
+MFannotation=bind_cols(data.frame(MFgene),data.frame(MFlist))
+```
+
+Running with CC
+
+```{r}
+CCresults=gprofiler(interestingGenes, organism="mmusculus", min_set_size=5, min_isect_size=5, correction_method="fdr", src_filter="GO:CC")
+CClist=CCresults$term.name
+CCgene=CCresults$intersection
+CCannotation=bind_cols(data.frame(CCgene),data.frame(CClist))
+```
